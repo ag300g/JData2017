@@ -2,67 +2,14 @@ library(data.table)
 library(dplyr)
 library(xgboost)
 
-online_train <- fread('../data/online_train_20170512085041.txt', na.strings = c('NULL'))
-online_prediction_x <- fread('../data/online_prediction_20170512085121.txt')
+source('./utils.R')
 
-# 补充特征
-supp <- fread('../data/dev_ftp_user_feacture_zhjs_01_20170511134601.csv', na.strings = c('NULL'))
-supp$flag <- NULL
 
-online_train <- left_join(online_train, supp, by='user_id')
-online_prediction_x <- left_join(online_prediction_x, supp, by='user_id')
 
-label <- online_train$label
-user_id <- online_train$user_id
 
-online_train$user_id <- NULL
-online_train$sku_id <- NULL
-online_train$label <- NULL
-online_train$stat_day_cnt <- NULL
 
-# 构建均衡训练集
-train_sample_true <- which(label == 1)
-train_sample_false <- which(label == 0)
-balanced_sample_size <- ceiling(length(train_sample_true) * 2)
-true_index <- train_sample_true
-false_index <- train_sample_false[sample(1:length(train_sample_false), balanced_sample_size)]
-balanced_index <- c(true_index, false_index)
 
-dtrain_balanced <- xgb.DMatrix(data = as.matrix(1.0*online_train[balanced_index, ]), 
-                               label=label[balanced_index])
 
-# 评价函数
-recall <- function(preds, dtrain) {
-    labels <- getinfo(dtrain, "label")
-    labels_pred <- preds > 0.5
-    recall <- sum(labels_pred * labels)/sum(labels)
-    return(list(metric = "recall", value = recall))
-}
-
-# 设置参数
-params <- list(objective="binary:logistic", nthread=5, max_depth=8, eta=0.02, subsample=0.8)
-# params <- list(objective="binary:logistic", nthread=5, max_depth=8, eta=0.02, subsample=0.667)
-# params <- list(objective="binary:logistic", nthread=5, max_depth=8, eta=0.02, subsample=0.8)
-
-# # 交叉验证
-# train.xgboost.cv <- xgb.cv(data = dtrain_balanced, params=params, nrounds=400, nfold=5, feval=recall)
-train.xgboost.cv <- xgb.cv(data = dtrain_balanced, params=params, nrounds=400, nfold=5)
-
-# 训练模型（均衡样本）
-train.xgboost.balanced <- xgb.train(data=dtrain_balanced, params=params, nrounds=1000)
-
-# 最终模型
-model <- train.xgboost.balanced
-
-# 训练误差分析
-dtrain <- xgb.DMatrix(data = as.matrix(1.0*online_train), label=label)
-pred <- predict(model, dtrain)
-tmp <- data.frame(label, pred)
-tmp <- tmp %>% arrange(desc(pred))
-
-precision <- sum(tmp$label[1:12000]) / 12000
-recall <- sum(tmp$label[1:12000]) / sum(tmp$label)
-f11 <- 6*recall*precision / (5*recall + precision)
 
 # 提交预测
 user_id <- online_prediction_x$user_id
@@ -101,15 +48,21 @@ write.csv(output, file='output.csv', row.names=FALSE, quote=FALSE)
 # feature_rank <- as.numeric(imp$Feature) + 1
 # print(colnames(online_prediction_x)[feature_rank])
 # 
-# # 特征选择
-# num_of_features <- 30
-# imp <- xgb.importance(model=train.xgboost.balanced)
-# feature_rank <- as.numeric(imp$Feature) + 1
-# feature_select_index <- feature_rank[1:num_of_features]
-# 
-# # re-train
-# dtrain_balanced_fs <- xgb.DMatrix(data = as.matrix(1.0*online_train[balanced_index, ..feature_select_index]),
-#                                   label = label[balanced_index])
-# params <- list(objective="binary:logistic", nthread=5, max_depth=8, eta=0.02, subsample=0.8)
-# train.xgboost.cv <- xgb.cv(data = dtrain_balanced_fs, params=params, nrounds=200, nfold=5)
-# train.xgboost.balanced.fs <- xgb.train(data=dtrain_balanced_fs, params=params, nrounds=300)
+# 特征选择
+num_of_features <- 30
+imp <- xgb.importance(model=model)
+feature_rank <- as.numeric(imp$Feature) + 1
+feature_select_index <- feature_rank[1:num_of_features]
+
+
+mydata <- fread('D:/sku_select_20170512115540.csv', na.strings=c("NULL"))
+mydata <- mydata[!is.na(mydata$sku_id), ]
+mydata <- mydata %>% group_by(user_id) %>% summarise(sku_id=max(sku_id))
+submit <- fread('./output1224774.csv')
+result <- left_join(submit, mydata, by='user_id')
+
+idx <- which(is.na(result$sku_id.y))
+result$sku_id.y[idx] <- result$sku_id.x[idx]
+result$sku_id.x <- NULL
+colnames(result) <- c('user_id', 'sku_id')
+
